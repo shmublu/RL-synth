@@ -35,6 +35,7 @@ rewards = [0]
 reward_seq = []
 
 VERBOSE = 0
+FORMAL_CONSTRAIN = False
 
 t = 0
 
@@ -93,12 +94,21 @@ class OurCustomEnv(gym.Env):
         
     def step(self, action):
         global VERBOSE
+        global FORMAL_CONSTRAIN
         self.time += 1
+        
+        if FORMAL_CONSTRAIN:
+            if action[STEER] < self.min_angle:
+                if VERBOSE > 2:
+                    print('Model output has been constrained up!', action[STEER], self.min_angle)
+                action[STEER] = self.min_angle
+            elif action[STEER] > self.max_angle:
+                if VERBOSE > 2:
+                    print('Model output has been constrained down!', action[STEER], self.max_angle)
+                action[STEER] = self.max_angle
         steer = action[STEER] % MAX_ANGLE
         steer_x = math.cos(steer)
         steer_y = math.sin(steer)
-        
-        
         steer_dir = np.array([steer_x,steer_y])
         dist_x = self.reward_x -self.user_x
         dist_y = self.reward_y -self.user_y
@@ -113,11 +123,13 @@ class OurCustomEnv(gym.Env):
             reward = 50.0
             self.place_new_reward()
         elif old_dist < dist:
-            reward = -1
+            reward = -4 * (dist - old_dist)
         else:
-            reward = 0
-        if action[STEER] >= self.max_angle or action[STEER] < self.min_angle:
+            reward = 1 * (old_dist - dist)
+        if action[STEER] > self.max_angle or action[STEER] < self.min_angle:
             reward -= 100
+            if VERBOSE > 2:
+                print('Model has been penalized for operating outside of constraints')
         done = False if self.time < EPOCH_LEN else True
         info = {}
         angle_away = np.arctan2(dist_x,dist_y)
@@ -125,8 +137,8 @@ class OurCustomEnv(gym.Env):
             print("Steer: ", action[STEER], "Steer X / Y: ", steer_x, steer_y, "Dist from Reward: ", dist_x, dist_y, "Limits: ", self.min_angle, self.max_angle)
         elif VERBOSE > 3:
             print("Steer: ", action[STEER], "Steer X / Y: ", steer_x, steer_y, "Dist from Reward: ", dist_x, dist_y, "Limits: ", self.min_angle, self.max_angle)
-        self.min_angle = random.uniform(0,(MAX_ANGLE * 2) - 0.5)
-        self.max_angle = min(self.min_angle + random.uniform(0.5,MAX_ANGLE), 2 * MAX_ANGLE)
+        self.min_angle = random.uniform(0,(MAX_ANGLE * 2) - 0.1)
+        self.max_angle = min(self.min_angle + random.uniform(0.1,MAX_ANGLE), 2 * MAX_ANGLE)
         if t > no_synth:
             min_ang, max_ang = synthesize_constraints(steer, self.user_x, self.user_y)
             self.min_angle = min_ang
@@ -192,12 +204,20 @@ class ManualCustomEnv(gym.Env):
         
     def step(self, action):
         global VERBOSE
+        global FORMAL_CONSTRAIN
         self.time += 1
+        if FORMAL_CONSTRAIN:
+            if action[STEER] < self.min_angle:
+                if VERBOSE > 2:
+                    print('Model output has been constrained up!', action[STEER], self.min_angle)
+                action[STEER] = self.min_angle
+            elif action[STEER] > self.max_angle:
+                if VERBOSE > 2:
+                    print('Model output has been constrained down!', action[STEER], self.max_angle)
+                action[STEER] = self.max_angle
         steer = action[STEER] % MAX_ANGLE
         steer_x = math.cos(steer)
         steer_y = math.sin(steer)
-        
-        
         steer_dir = np.array([steer_x,steer_y])
         dist_x = self.reward_x -self.user_x
         dist_y = self.reward_y -self.user_y
@@ -212,11 +232,13 @@ class ManualCustomEnv(gym.Env):
             reward = 50.0
             self.place_new_reward()
         elif old_dist < dist:
-            reward = -1
+            reward = -4 * (dist - old_dist)
         else:
-            reward = 0
-        if action[STEER] >= self.max_angle or action[STEER] < self.min_angle:
+            reward = 1 * (old_dist - dist)
+        if action[STEER] > self.max_angle or action[STEER] < self.min_angle:
             reward -= 100
+            if VERBOSE > 2:
+                print('Model has been penalized for operating outside of constraints')
         done = False if self.time < EPOCH_LEN else True
         info = {}
         angle_away = np.arctan2(dist_x,dist_y)
@@ -225,7 +247,7 @@ class ManualCustomEnv(gym.Env):
         elif VERBOSE > 3:
             print("Steer: ", action[STEER], "Steer X / Y: ", steer_x, steer_y, "Dist from Reward: ", dist_x, dist_y, "Limits: ", self.min_angle, self.max_angle)
         self.min_angle = float(input('Input the minimum angle parameter.'))
-        self.max_angle = float(input('Input the minimum angle parameter.'))
+        self.max_angle = float(input('Input the maximum angle parameter.'))
         state = np.array([angle_away, self.min_angle, self.max_angle])
         return state, reward, done, info 
 
@@ -505,7 +527,48 @@ def rl_test(training_runs= 1, train_no_synth = 0):
     print('Reward History: ',reward_seq[1:])
 
     
-    
+def load_rl_train(training_runs=5000, train_no_synth = 3000, net_size=256):
+    global t
+    global VERBOSE
+    global rewards
+    global reward_seq
+    global no_synth
+    global network_size
+    env = OurCustomEnv()
+    no_synth = train_no_synth
+    network_size = net_size
+    file = open("agent.pickle",'rb')
+    agent = pickle.load(file)
+    file.close()
+    score_history = []
+    max_score = -50000
+    for i in range(training_runs):
+        t=i
+        obs = env.reset()
+        done = False
+        score = 0
+        while not done:
+            act = agent.choose_action(obs)
+            new_state, reward, done, info = env.step(act)
+            agent.remember(obs, act, reward, new_state, int(done))
+            agent.learn()
+            score += reward
+            obs = new_state
+        if max_score < score:
+            max_score = score
+            if VERBOSE > 0:
+                print("New Max: " +str(max_score))
+        if VERBOSE > 1:
+            print(i,score)
+        score_history.append(score)
+        if len(score_history) > 51 and VERBOSE > 1 and i % 10 == 0:
+            print("Average score(last 50): " + str(sum(score_history[-50:])/ len(score_history[-50:])))
+    pickle.dump(agent, file = open("agent.pickle", "wb"))
+    obs = env.reset()
+    if VERBOSE > 0:    
+        print('Score History: ', score_history)
+        print('Reward History: ',reward_seq[1:])
+
 def rl_train(training_runs=5000, train_no_synth = 3000, net_size=256):
     global t
     global VERBOSE
@@ -538,8 +601,8 @@ def rl_train(training_runs=5000, train_no_synth = 3000, net_size=256):
         if VERBOSE > 1:
             print(i,score)
         score_history.append(score)
-        if len(score_history) > 20 and VERBOSE > 1:
-            print("Average score(last 15): " + str(sum(score_history[-15:])/ len(score_history[-15:])))
+        if len(score_history) > 51 and VERBOSE > 1 and i % 10 == 0:
+            print("Average score(last 50): " + str(sum(score_history[-50:])/ len(score_history[-50:])))
     pickle.dump(agent, file = open("agent.pickle", "wb"))
     obs = env.reset()
     if VERBOSE > 0:    
@@ -551,10 +614,12 @@ if __name__ == "__main__":
     parser.add_argument("training_runs", help="How many times to train in total", type=int)
     parser.add_argument("training_runs_no_synth", help="How many times to train without synthesis", type=int)
     parser.add_argument("network_size", help="Size of Actor NN, and Critic NN is 0.75 times this(recommended: 128+)", type=int)
+    parser.add_argument("-fc", help="Formal Constraint Mode",action="store_true")
     group2 = parser.add_mutually_exclusive_group()
     group1 = parser.add_mutually_exclusive_group()
-    group2.add_argument("-nt", help="Non-training mode (load the model from agent.pickle and test it out)",action="store_true")
+    group2.add_argument("-nt", help="Non-training Mode (load the model from agent.pickle and test it out)",action="store_true")
     group2.add_argument("-mi", help="Manual Input Mode (load the model from agent.pickle and test it out- you get to choose the limits)",action="store_true")
+    group2.add_argument("-tp", help="Train Pickled Model Mode (load the model from agent.pickle and retrain it)",action="store_true")
     group1.add_argument("-v", help="Verbose Mode",action="store_true")
     group1.add_argument("-vv", help="Super Verbose Mode",action="store_true")
     group1.add_argument("-vvv", help="Super Duper Verbose Mode",action="store_true")
@@ -566,11 +631,15 @@ if __name__ == "__main__":
     elif args.vv:
         VERBOSE = 2
     elif args.v:
-        VERBOSE = 1 
+        VERBOSE = 1
+    if args.fc:
+        FORMAL_CONSTRAIN = True
     if args.nt:
         rl_test(args.training_runs,args.training_runs_no_synth)
     elif args.mi:
         rl_manual_test(args.training_runs,args.training_runs_no_synth)
+    elif args.tp:
+        load_rl_train(args.training_runs, args.training_runs_no_synth, args.network_size)
     else:
         rl_train(args.training_runs, args.training_runs_no_synth, args.network_size)
     
