@@ -45,7 +45,7 @@ network_size = 256
 
 
 #constraint_array = ["is_x1", "is_x2", "is_greater", "is_less", "constant"]
-constraint_array = [0, 1, 1, 0, 6]
+constraint_array = [0, 1, 1, 0, 3]
 
 
 
@@ -74,16 +74,16 @@ def is_violated(constraint, action):
         constrained_variable = SPEED
     if constraint[2] == 1:
         if action[constrained_variable] < constraint[4]:
-            return True, 0
+            return True, constraint[4] - action[constrained_variable]
     else:
         if action[constrained_variable] > constraint[4]:
-            return True, 0
+            return True, action[constrained_variable] - constraint[4]
     return False, 0
 def randomize_constraint(constraint):
-    constraint[0] = (constraint[0] + 1) % 2
-    constraint[1] = (constraint[1] + 1) % 2
-    constraint[2] = (constraint[2] + 1) % 2
-    constraint[3] = (constraint[3] + 1) % 2
+    constraint[0] = random.randint(0,1)
+    constraint[1] = (constraint[0] + 1) % 2
+    constraint[2] = random.randint(0,1)
+    constraint[3] = (constraint[2] + 1) % 2
     constraint[4] = random.uniform(0.001, MAX_ANGLE)
 
 def pick_constraint(constraint):
@@ -132,9 +132,7 @@ class OurCustomEnv(gym.Env):
                     print('Model output has been constrained down!', action[STEER], self.max_angle)
                 action[STEER] = self.max_angle
         steer = action[STEER] % MAX_ANGLE
-        self.speed = action[SPEED] % MAX_SPEED
-        if action[STEER] > MAX_ANGLE:
-            self.speed = 0
+        self.speed =  max(action[SPEED], 0) if action[SPEED] < MAX_SPEED else 0
         steer_x = math.cos(steer)
         steer_y = math.sin(steer)
         steer_dir = np.array([steer_x,steer_y])
@@ -148,22 +146,22 @@ class OurCustomEnv(gym.Env):
         dist_y = self.reward_y -self.user_y
         dist = (dist_x ** 2 + dist_y **2 ) #we aren't going to square root for speed sake
         if dist <= 4:
-            reward = 50.0
+            reward = 5
             self.place_new_reward()
         elif old_dist < dist:
-            reward = -4 * (dist - old_dist)
+            reward = .01 * (dist - old_dist)
         else:
-            reward = 1 * (old_dist - dist)
+            reward = .1 * (old_dist - dist)
         is_v, how_much = is_violated(constraint_array, action)
         if is_v:
-            reward -= 200 * (1 + abs(how_much))
+            reward -= 10 * (1 + abs(how_much)) + 1
             if VERBOSE > 3 or is_manual:
-                print('Model has been penalized for operating outside of constraints')
+                print('Model has been penalized for operating outside of constraints',)
         done = False if self.time < EPOCH_LEN else True
         info = {}
         angle_away = np.arctan2(dist_x,dist_y)
         if self.time % 97 == 0 and VERBOSE > 2:
-            print(np.array([angle_away] + constraint_array))
+            print(constraint_array)
             print("Speed: ", action[SPEED], "Steer: ", action[STEER], "Dist from Reward: ", dist_x, dist_y, "Constraint: ",constraint_array)
         elif VERBOSE > 3:
             print("Speed: ", action[SPEED],  "Steer: ", action[STEER], "Dist from Reward: ", dist_x, dist_y,  "Constraint: ",constraint_array)
