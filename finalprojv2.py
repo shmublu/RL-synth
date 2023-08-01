@@ -56,16 +56,13 @@ N_ACTIONS = 2
 
 N_OBS = 6
 #speed, x_dist, y_dist : constraint_array
-
+is_manual = False
     
 def square_rooted(x):
    return round(math.sqrt(sum([a*a for a in x])),3)
   
-def cosine_similarity(x,y):
-    numerator = sum(a*b for a,b in zip(x,y))
-    denominator = square_rooted(x)*square_rooted(y)
-    return round(numerator/float(denominator),5)
 def is_violated(constraint, action):
+    global is_manual
     if action[SPEED] < 0:
         return True
     if action[STEER] < 0 or action[STEER] > MAX_ANGLE:
@@ -76,10 +73,10 @@ def is_violated(constraint, action):
     else:
         constrained_variable = SPEED
     if constraint[2] == 1:
-        if action[constrained_variable] > constraint[4]:
+        if action[constrained_variable] < constraint[4]:
             return True
     else:
-        if action[constrained_variable] > constraint[3]:
+        if action[constrained_variable] > constraint[4]:
             return True
     return False
 def randomize_constraint(constraint):
@@ -87,8 +84,19 @@ def randomize_constraint(constraint):
     constraint[1] = (constraint[1] + 1) % 2
     constraint[2] = (constraint[2] + 1) % 2
     constraint[3] = (constraint[3] + 1) % 2
-    constraint[4] = random.uniform(0.01, MAX_ANGLE)
+    constraint[4] = random.uniform(0.001, MAX_ANGLE)
 
+def pick_constraint(constraint):
+    print("Steer(0) or speed(1)?")
+    i = int(input())
+    constraint[0] = (i + 1) % 2
+    constraint[1] = (i) % 2
+    print(">(0) or <(1)?")
+    j = int(input())
+    constraint[2] = (j + 1) % 2
+    constraint[3] = (j) % 2
+    print("Constant?")
+    constraint[4] = float(input())
 class OurCustomEnv(gym.Env):
 
     def __init__(self):
@@ -112,6 +120,7 @@ class OurCustomEnv(gym.Env):
         global VERBOSE
         global FORMAL_CONSTRAIN
         global constraint_array
+        global is_manual
         self.time += 1
         if FORMAL_CONSTRAIN:
             if action[STEER] < self.min_angle:
@@ -145,20 +154,23 @@ class OurCustomEnv(gym.Env):
             reward = 1 * (old_dist - dist)
         if is_violated(constraint_array, action):
             reward -= 200
-            if VERBOSE > 3:
+            if VERBOSE > 3 or is_manual:
                 print('Model has been penalized for operating outside of constraints')
         done = False if self.time < EPOCH_LEN else True
         info = {}
         angle_away = np.arctan2(dist_x,dist_y)
         if self.time % 97 == 0 and VERBOSE > 2:
             print(np.array([angle_away] + constraint_array))
-            print("Speed: ", action[SPEED], "Steer X / Y: ", steer_x, steer_y, "Dist from Reward: ", dist_x, dist_y, "Constraint: ",constraint_array)
+            print("Speed: ", action[SPEED], "Steer: ", action[STEER], "Dist from Reward: ", dist_x, dist_y, "Constraint: ",constraint_array)
         elif VERBOSE > 3:
-            print("Speed: ", action[SPEED], "Steer X / Y: ", steer_x, steer_y, "Dist from Reward: ", dist_x, dist_y,  "Constraint: ",constraint_array)
-        randomize_constraint(constraint_array)
+            print("Speed: ", action[SPEED],  "Steer: ", action[STEER], "Dist from Reward: ", dist_x, dist_y,  "Constraint: ",constraint_array)
+
+        if not is_manual:
+            randomize_constraint(constraint_array)
+        else:
+            pick_constraint(constraint_array)
         state = np.array([angle_away] + constraint_array)
         return state, reward, done, info 
-
     def reset(self):
         global reward_seq
         global t
@@ -197,111 +209,6 @@ class OurCustomEnv(gym.Env):
             dist_y = self.user_y - self.reward_y
             dist = (dist_x ** 2 + dist_y **2 )
         
-class ManualCustomEnv(gym.Env):
-
-    def __init__(self):
-        self.observation_space = spaces.Box(low = np.array([-1000, -1000, -1, -1]), high = np.array([1000, 1000, 1, 1]),
-                                                                     dtype = np.float32)
-        self.action_space = spaces.Box(low = np.array([-1.0,-1.0]), high = np.array([1.0, 1.0]),
-                                                        dtype = np.float32)
-        self.user_x = 0
-        self.user_y = 0
-        self.rewards = 0
-        self.reward_y = 0
-        self.reward_x = 0
-        self.place_new_reward(True,5.5)
-        self.speed = MAX_SPEED
-        self.time = 0
-        
-    def seed(self, seed=None):
-        random.seed(seed)
-        
-    def step(self, action):
-        global VERBOSE
-        global FORMAL_CONSTRAIN
-        self.time += 1
-        if FORMAL_CONSTRAIN:
-            if action[STEER] < self.min_angle:
-                if VERBOSE > 2:
-                    print('Model output has been constrained up!', action[STEER], self.min_angle)
-                action[STEER] = self.min_angle
-            elif action[STEER] > self.max_angle:
-                if VERBOSE > 2:
-                    print('Model output has been constrained down!', action[STEER], self.max_angle)
-                action[STEER] = self.max_angle
-        steer = action[STEER] % MAX_ANGLE
-        steer_x = math.cos(steer)
-        steer_y = math.sin(steer)
-        steer_dir = np.array([steer_x,steer_y])
-        dist_x = self.reward_x -self.user_x
-        dist_y = self.reward_y -self.user_y
-        old_dist = (dist_x ** 2 + dist_y **2 )
-        self.user_x += self.speed * steer_dir[0]
-        self.user_y += self.speed * steer_dir[1]
-        
-        dist_x = self.reward_x -self.user_x
-        dist_y = self.reward_y -self.user_y
-        dist = (dist_x ** 2 + dist_y **2 ) #we aren't going to square root for speed sake
-        if dist <= 4:
-            reward = 50.0
-            self.place_new_reward()
-        elif old_dist < dist:
-            reward = -4 * (dist - old_dist)
-        else:
-            reward = 1 * (old_dist - dist)
-        if action[STEER] > self.max_angle or action[STEER] < self.min_angle:
-            reward -= 100
-            if VERBOSE > 2:
-                print('Model has been penalized for operating outside of constraints')
-        done = False if self.time < EPOCH_LEN else True
-        info = {}
-        angle_away = np.arctan2(dist_x,dist_y)
-        if self.time % 98 == 0 and VERBOSE > 2:
-            print("Steer: ", action[STEER], "Steer X / Y: ", steer_x, steer_y, "Dist from Reward: ", dist_x, dist_y, "Limits: ", self.min_angle, self.max_angle)
-        elif VERBOSE > 3:
-            print("Steer: ", action[STEER], "Steer X / Y: ", steer_x, steer_y, "Dist from Reward: ", dist_x, dist_y, "Limits: ", self.min_angle, self.max_angle)
-        self.min_angle = float(input('Input the minimum angle parameter.'))
-        self.max_angle = float(input('Input the maximum angle parameter.'))
-        state = np.array([angle_away, self.min_angle, self.max_angle])
-        return state, reward, done, info 
-
-    def reset(self):
-        global reward_seq
-        global t
-        t += 1
-        reward_seq.append(self.rewards)
-        self.rewards = 0
-        self.user_x = 0
-        self.user_y = 0
-        self.reward_y = 0
-        self.reward_x = 0
-        self.place_new_reward(True, 5.5)
-        dist_x = self.user_x - self.reward_x
-        dist_y = self.user_y - self.reward_y
-        
-        self.min_angle = 0
-        self.max_angle = MAX_ANGLE
-        
-        self.speed = MAX_SPEED
-        self.time = 0
-        angle_away = np.arctan2(dist_x,dist_y)
-        state = np.array([angle_away, self.min_angle, self.max_angle])
-        return state
-    def place_new_reward(self, first = False, d = 6.5, r = rewards):
-        dist_x = self.user_x - self.reward_x
-        dist_y = self.user_y - self.reward_y
-        dist = (dist_x ** 2 + dist_y **2 ) ** 0.5
-        if not first:
-            if VERBOSE > 2:
-                print("reward was gotten!", self.time, dist)
-            self.rewards += 1
-        while dist < 4.4:
-            self.reward_y = random.uniform(-1.0,1.0) * d + self.user_y
-            self.reward_x = random.uniform(-1.0,1.0) * d + self.user_x
-            dist_x = self.user_x - self.reward_x
-            dist_y = self.user_y - self.reward_y
-            dist = (dist_x ** 2 + dist_y **2 )
-    
 class ReplayBuffer():
 
     def __init__(self, max_size, input_shape=N_OBS, n_actions=N_ACTIONS):
@@ -480,13 +387,15 @@ class Agent(object):
 def rl_manual_test(training_runs= 1, train_no_synth = 0):
     global no_synth
     global VERBOSE
+    global is_manual
     file = open("agent.pickle",'rb')
     agent = pickle.load(file)
     file.close()
     VERBOSE = 5
     no_synth = train_no_synth
-    env = ManualCustomEnv()
+    env = OurCustomEnv()
     score_history = []
+    is_manual = True
     max_score = -50000
     for i in range(training_runs):
         obs = env.reset()
