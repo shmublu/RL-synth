@@ -10,7 +10,6 @@
 #Between 8-12 meters away: 3
 #Between 12-20 meters away: 4
 #20+ meters away
-from z3 import *
 
 import pickle
 import gym
@@ -26,9 +25,11 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 MAX_ANGLE = 6.2831
+MAX_SPEED = 5
 EPOCH_LEN = 200
 
 STEER = 0
+SPEED = 1
 BRAKE = 2
 TIME_CONSTANT = 1
 rewards = [0]
@@ -43,28 +44,19 @@ no_synth = 3000
 network_size = 256
 
 
+#constraint_array = ["is_x1", "is_x2", "is_greater", "is_less", "constant"]
+constraint_array = [0, 1, 1, 0, 1]
+
+
 
 MAX_SPEED=0.25
 
-N_ACTIONS = 1
-#x_dir, y_dir, brake
+N_ACTIONS = 2
+#brake, speed
 
-N_OBS = 3
-#speed, x_dist, y_dist
+N_OBS = 6
+#speed, x_dist, y_dist : constraint_array
 
-def synthesize_constraints(current_angle, user_x, user_y):
-    x = Real('x') #minimum_angle
-    y = Real('y') #maximum_angle
-    z = Real('z')
-    s = Solver()
-    s.add(y > x , y < MAX_ANGLE * 2, x > 0, z == current_angle, x > (current_angle - 0.5 * MAX_ANGLE), y > (current_angle + 0.5 * MAX_ANGLE))
-    if not s.check():
-        return False
-    m = s.model()
-    mi, ma = m[x].as_fraction(), m[y].as_fraction()
-    mi = float(mi.numerator) / float(mi.denominator)
-    ma = float(ma.numerator) / float(ma.denominator)
-    return mi, ma
     
 def square_rooted(x):
    return round(math.sqrt(sum([a*a for a in x])),3)
@@ -73,6 +65,30 @@ def cosine_similarity(x,y):
     numerator = sum(a*b for a,b in zip(x,y))
     denominator = square_rooted(x)*square_rooted(y)
     return round(numerator/float(denominator),5)
+def is_violated(constraint, action):
+    if action[SPEED] < 0:
+        return True
+    if action[STEER] < 0 or action[STEER] > MAX_ANGLE:
+        return True
+    constrained_variable = -1
+    if constraint[0] == 1:
+        constrained_variable = STEER
+    else:
+        constrained_variable = SPEED
+    if constraint[2] == 1:
+        if action[constrained_variable] > constraint[4]:
+            return True
+    else:
+        if action[constrained_variable] > constraint[3]:
+            return True
+    return False
+def randomize_constraint(constraint):
+    constraint[0] = (constraint[0] + 1) % 2
+    constraint[1] = (constraint[1] + 1) % 2
+    constraint[2] = (constraint[2] + 1) % 2
+    constraint[3] = (constraint[3] + 1) % 2
+    constraint[4] = random.uniform(0.01, MAX_ANGLE)
+
 class OurCustomEnv(gym.Env):
 
     def __init__(self):
@@ -95,8 +111,8 @@ class OurCustomEnv(gym.Env):
     def step(self, action):
         global VERBOSE
         global FORMAL_CONSTRAIN
+        global constraint_array
         self.time += 1
-        
         if FORMAL_CONSTRAIN:
             if action[STEER] < self.min_angle:
                 if VERBOSE > 2:
@@ -107,6 +123,7 @@ class OurCustomEnv(gym.Env):
                     print('Model output has been constrained down!', action[STEER], self.max_angle)
                 action[STEER] = self.max_angle
         steer = action[STEER] % MAX_ANGLE
+        self.speed = action[SPEED] % MAX_SPEED
         steer_x = math.cos(steer)
         steer_y = math.sin(steer)
         steer_dir = np.array([steer_x,steer_y])
@@ -126,29 +143,25 @@ class OurCustomEnv(gym.Env):
             reward = -4 * (dist - old_dist)
         else:
             reward = 1 * (old_dist - dist)
-        if action[STEER] > self.max_angle or action[STEER] < self.min_angle:
-            reward -= 100
+        if is_violated(constraint_array, action):
+            reward -= 200
             if VERBOSE > 2:
                 print('Model has been penalized for operating outside of constraints')
         done = False if self.time < EPOCH_LEN else True
         info = {}
         angle_away = np.arctan2(dist_x,dist_y)
         if self.time % 98 == 0 and VERBOSE > 2:
-            print("Steer: ", action[STEER], "Steer X / Y: ", steer_x, steer_y, "Dist from Reward: ", dist_x, dist_y, "Limits: ", self.min_angle, self.max_angle)
+            print("Speed: ", action[SPEED], "Steer X / Y: ", steer_x, steer_y, "Dist from Reward: ", dist_x, dist_y, "Constraint: ",constraint_array)
         elif VERBOSE > 3:
-            print("Steer: ", action[STEER], "Steer X / Y: ", steer_x, steer_y, "Dist from Reward: ", dist_x, dist_y, "Limits: ", self.min_angle, self.max_angle)
-        self.min_angle = random.uniform(0,(MAX_ANGLE * 2) - 0.1)
-        self.max_angle = min(self.min_angle + random.uniform(0.1,MAX_ANGLE), 2 * MAX_ANGLE)
-        if t > no_synth:
-            min_ang, max_ang = synthesize_constraints(steer, self.user_x, self.user_y)
-            self.min_angle = min_ang
-            self.max_angle = max_ang
-        state = np.array([angle_away, self.min_angle, self.max_angle])
+            print("Speed: ", action[SPEED], "Steer X / Y: ", steer_x, steer_y, "Dist from Reward: ", dist_x, dist_y,  "Constraint: ",constraint_array)
+        randomize_constraint(constraint_array)
+        state = np.array([angle_away] + constraint_array)
         return state, reward, done, info 
 
     def reset(self):
         global reward_seq
         global t
+        global constraint_array
         t += 1
         reward_seq.append(self.rewards)
         self.rewards = 0
@@ -166,7 +179,8 @@ class OurCustomEnv(gym.Env):
         self.speed = MAX_SPEED
         self.time = 0
         angle_away = np.arctan2(dist_x,dist_y)
-        state = np.array([angle_away, self.min_angle, self.max_angle])
+        state = np.array([angle_away] + constraint_array)
+        print(state)
         return state
     def place_new_reward(self, first = False, d = 6.5, r = rewards):
         dist_x = self.user_x - self.reward_x
