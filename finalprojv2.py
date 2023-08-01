@@ -145,12 +145,13 @@ class OurCustomEnv(gym.Env):
             reward = 1 * (old_dist - dist)
         if is_violated(constraint_array, action):
             reward -= 200
-            if VERBOSE > 2:
+            if VERBOSE > 3:
                 print('Model has been penalized for operating outside of constraints')
         done = False if self.time < EPOCH_LEN else True
         info = {}
         angle_away = np.arctan2(dist_x,dist_y)
-        if self.time % 98 == 0 and VERBOSE > 2:
+        if self.time % 97 == 0 and VERBOSE > 2:
+            print(np.array([angle_away] + constraint_array))
             print("Speed: ", action[SPEED], "Steer X / Y: ", steer_x, steer_y, "Dist from Reward: ", dist_x, dist_y, "Constraint: ",constraint_array)
         elif VERBOSE > 3:
             print("Speed: ", action[SPEED], "Steer X / Y: ", steer_x, steer_y, "Dist from Reward: ", dist_x, dist_y,  "Constraint: ",constraint_array)
@@ -180,7 +181,6 @@ class OurCustomEnv(gym.Env):
         self.time = 0
         angle_away = np.arctan2(dist_x,dist_y)
         state = np.array([angle_away] + constraint_array)
-        print(state)
         return state
     def place_new_reward(self, first = False, d = 6.5, r = rewards):
         dist_x = self.user_x - self.reward_x
