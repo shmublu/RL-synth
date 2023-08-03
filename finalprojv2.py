@@ -45,11 +45,11 @@ network_size = 256
 
 
 #constraint_array = ["is_x1", "is_x2", "is_greater", "is_less", "constant"]
-constraint_array = [0, 1, 1, 0, 1]
+constraint_array = [0, 1, 1, 0, 6]
 
 
 
-MAX_SPEED=0.25
+MAX_SPEED=5
 
 N_ACTIONS = 2
 #brake, speed
@@ -63,10 +63,10 @@ def square_rooted(x):
   
 def is_violated(constraint, action):
     global is_manual
-    if action[SPEED] < 0:
-        return True
+    if action[SPEED] < 0 or action[SPEED] > MAX_SPEED:
+        return True, action[SPEED]
     if action[STEER] < 0 or action[STEER] > MAX_ANGLE:
-        return True
+        return True, action[STEER]
     constrained_variable = -1
     if constraint[0] == 1:
         constrained_variable = STEER
@@ -74,11 +74,11 @@ def is_violated(constraint, action):
         constrained_variable = SPEED
     if constraint[2] == 1:
         if action[constrained_variable] < constraint[4]:
-            return True
+            return True, 0
     else:
         if action[constrained_variable] > constraint[4]:
-            return True
-    return False
+            return True, 0
+    return False, 0
 def randomize_constraint(constraint):
     constraint[0] = (constraint[0] + 1) % 2
     constraint[1] = (constraint[1] + 1) % 2
@@ -133,6 +133,8 @@ class OurCustomEnv(gym.Env):
                 action[STEER] = self.max_angle
         steer = action[STEER] % MAX_ANGLE
         self.speed = action[SPEED] % MAX_SPEED
+        if action[STEER] > MAX_ANGLE:
+            self.speed = 0
         steer_x = math.cos(steer)
         steer_y = math.sin(steer)
         steer_dir = np.array([steer_x,steer_y])
@@ -152,8 +154,9 @@ class OurCustomEnv(gym.Env):
             reward = -4 * (dist - old_dist)
         else:
             reward = 1 * (old_dist - dist)
-        if is_violated(constraint_array, action):
-            reward -= 200
+        is_v, how_much = is_violated(constraint_array, action)
+        if is_v:
+            reward -= 200 * (1 + abs(how_much))
             if VERBOSE > 3 or is_manual:
                 print('Model has been penalized for operating outside of constraints')
         done = False if self.time < EPOCH_LEN else True
