@@ -85,6 +85,8 @@ def randomize_constraint(constraint):
     constraint[2] = random.randint(0,1)
     constraint[3] = (constraint[2] + 1) % 2
     constraint[4] = random.uniform(0.001, MAX_ANGLE)
+    if constraint[1] == 1 and constraint[4] > MAX_SPEED:
+        constraint[4] = random.uniform(4.9, 5)
 
 def pick_constraint(constraint):
     print("Steer(0) or speed(1)?")
@@ -112,6 +114,7 @@ class OurCustomEnv(gym.Env):
         self.place_new_reward(True,5.5)
         self.speed = MAX_SPEED
         self.time = 0
+        self.mistakes =0
         
     def seed(self, seed=None):
         random.seed(seed)
@@ -154,7 +157,8 @@ class OurCustomEnv(gym.Env):
             reward = .1 * (old_dist - dist)
         is_v, how_much = is_violated(constraint_array, action)
         if is_v:
-            reward -= 10 * (1 + abs(how_much)) + 1
+            self.mistakes += 1
+            reward -= 10 * (1 + abs(how_much)) ** 2 + 1
             if VERBOSE > 3 or is_manual:
                 print('Model has been penalized for operating outside of constraints',)
         done = False if self.time < EPOCH_LEN else True
@@ -425,6 +429,8 @@ def rl_test(training_runs= 1, train_no_synth = 0):
     file = open("agent.pickle",'rb')
     agent = pickle.load(file)
     file.close()
+    print(get_coverage(agent))
+    return
     VERBOSE += 1
     no_synth = train_no_synth
     env = OurCustomEnv()
@@ -493,7 +499,7 @@ def load_rl_train(training_runs=5000, train_no_synth = 3000, net_size=256):
         print('Score History: ', score_history)
         print('Reward History: ',reward_seq[1:])
 
-def rl_train(training_runs=5000, train_no_synth = 3000, net_size=256):
+def rl_train(training_runs=5000, train_no_synth = 3000, net_size=256,desired_coverage = 0.92):
     global t
     global VERBOSE
     global rewards
@@ -504,7 +510,7 @@ def rl_train(training_runs=5000, train_no_synth = 3000, net_size=256):
     no_synth = train_no_synth
     network_size = net_size
     agent = Agent(alpha=0.000025, beta=0.00025, tau=0.001, env=env, batch_size=64, n_actions=N_ACTIONS)
-    score_history = []
+    coverage_history = []
     max_score = -50000
     for i in range(training_runs):
         t=i
@@ -518,20 +524,39 @@ def rl_train(training_runs=5000, train_no_synth = 3000, net_size=256):
             agent.learn()
             score += reward
             obs = new_state
-        if max_score < score:
-            max_score = score
-            if VERBOSE > 0:
-                print("New Max: " +str(max_score))
         if VERBOSE > 1:
             print(i,score)
-        score_history.append(score)
-        if len(score_history) > 51 and VERBOSE > 1 and i % 10 == 0:
-            print("Average score(last 50): " + str(sum(score_history[-50:])/ len(score_history[-50:])))
+        if i % 25 == 0:
+            coverage = get_coverage(agent)
+            if VERBOSE > 1:    
+                    print('Coverage: ', coverage)
+            if coverage >= desired_coverage:
+                pickle.dump(agent, file = open("agent.pickle", "wb"))
+                obs = env.reset()
+                if VERBOSE > 0:    
+                    print('Coverage History: ', coverage_history)
+
     pickle.dump(agent, file = open("agent.pickle", "wb"))
     obs = env.reset()
     if VERBOSE > 0:    
-        print('Score History: ', score_history)
-        print('Reward History: ',reward_seq[1:])
+        print('Coverage History: ', coverage_history)
+    
+def get_coverage(agent, num_runs=5):
+    global no_synth
+    global VERBOSE
+    env = OurCustomEnv()
+    for i in range(num_runs):
+        obs = env.reset()
+        done = False
+        score = 0
+        while not done:
+            act = agent.choose_action(obs)
+            new_state, reward, done, info = env.step(act)
+            score += reward
+            obs = new_state
+    return 1 - env.mistakes/(num_runs*EPOCH_LEN) 
+    
+    
         
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
