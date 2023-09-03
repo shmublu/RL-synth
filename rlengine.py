@@ -32,6 +32,7 @@ STEER = 0
 SPEED = 1
 BRAKE = 2
 TIME_CONSTANT = 1
+MAX_SPEED=5
 rewards = [0]
 reward_seq = []
 
@@ -44,24 +45,42 @@ no_synth = 3000
 network_size = 256
 
 
-#constraint_array = ["is_x1", "is_x2", "is_greater", "is_less", "constant"]
-constraint_array = [0, 1, 1, 0, 3]
-
-
-
-MAX_SPEED=5
-
+#CONSTRAINT_ARRAY = ["is_x1", "is_x2", "is_greater", "is_less", "constant"]
+CONSTRAINT_ARRAY = [0, 1, 1, 0, 3]
 N_ACTIONS = 2
-#brake, speed
-
 N_OBS = 6
-#speed, x_dist, y_dist : constraint_array
+IS_VIOLATED = lambda: False, 0
+RANDOMIZE_CONSTRAINT = lambda: 0
+
+#speed, x_dist, y_dist : CONSTRAINT_ARRAY
 is_manual = False
+
+
+
+
+class ConstraintLanguage():
+    def __init__(self, constraint_array = [0,0,0,0,0], n_obs = 6, is_violated = lambda: (False, 0), randomize_constraint= lambda: (0)):
+        self.constraint_array = constraint_array
+        self.n_obs = n_obs
+        self.is_violated = is_violated
+        self.randomize_constraint = randomize_constraint
+
+
     
 def square_rooted(x):
    return round(math.sqrt(sum([a*a for a in x])),3)
   
-def is_violated(constraint, action):
+
+def is_violated_basic(constraint, action):
+    if action[STEER] > constraint[1]:
+        return True, action[STEER] - constraint[1]
+    elif action[STEER] < constraint[0]:
+        return True, abs(action[STEER] - constraint[0])
+    return False, 0
+def randomize_constraint_basic(constraint):
+    constraint[0] = random.uniform(0,MAX_ANGLE)
+    constraint[1] = random.uniform(constraint[0], MAX_ANGLE)
+def is_violated_box(constraint, action):
     global is_manual
     if action[SPEED] < 0 or action[SPEED] > MAX_SPEED:
         return True, action[SPEED]
@@ -79,7 +98,7 @@ def is_violated(constraint, action):
         if action[constrained_variable] > constraint[4]:
             return True, action[constrained_variable] - constraint[4]
     return False, 0
-def randomize_constraint(constraint):
+def randomize_constraint_box(constraint):
     constraint[0] = random.randint(0,1)
     constraint[1] = (constraint[0] + 1) % 2
     constraint[2] = random.randint(0,1)
@@ -122,7 +141,9 @@ class OurCustomEnv(gym.Env):
     def step(self, action):
         global VERBOSE
         global FORMAL_CONSTRAIN
-        global constraint_array
+        global CONSTRAINT_ARRAY
+        global IS_VIOLATED
+        global RANDOMIZE_CONSTRAINT
         global is_manual
         self.time += 1
         if FORMAL_CONSTRAIN:
@@ -155,7 +176,7 @@ class OurCustomEnv(gym.Env):
             reward = .01 * (dist - old_dist)
         else:
             reward = .1 * (old_dist - dist)
-        is_v, how_much = is_violated(constraint_array, action)
+        is_v, how_much = IS_VIOLATED(CONSTRAINT_ARRAY, action)
         if is_v:
             self.mistakes += 1
             reward -= 10 * (1 + abs(how_much)) ** 2 + 1
@@ -165,21 +186,20 @@ class OurCustomEnv(gym.Env):
         info = {}
         angle_away = np.arctan2(dist_x,dist_y)
         if self.time % 97 == 0 and VERBOSE > 2:
-            print(constraint_array)
-            print("Speed: ", action[SPEED], "Steer: ", action[STEER], "Dist from Reward: ", dist_x, dist_y, "Constraint: ",constraint_array)
+            print(CONSTRAINT_ARRAY)
+            print("Speed: ", action[SPEED], "Steer: ", action[STEER], "Dist from Reward: ", dist_x, dist_y, "Constraint: ",CONSTRAINT_ARRAY)
         elif VERBOSE > 3:
-            print("Speed: ", action[SPEED],  "Steer: ", action[STEER], "Dist from Reward: ", dist_x, dist_y,  "Constraint: ",constraint_array)
-
+            print("Speed: ", action[SPEED],  "Steer: ", action[STEER], "Dist from Reward: ", dist_x, dist_y,  "Constraint: ",CONSTRAINT_ARRAY)
         if not is_manual:
-            randomize_constraint(constraint_array)
+            RANDOMIZE_CONSTRAINT(CONSTRAINT_ARRAY)
         else:
-            pick_constraint(constraint_array)
-        state = np.array([angle_away] + constraint_array)
+            pick_constraint(CONSTRAINT_ARRAY)
+        state = np.array([angle_away] + CONSTRAINT_ARRAY)
         return state, reward, done, info 
     def reset(self):
         global reward_seq
         global t
-        global constraint_array
+        global CONSTRAINT_ARRAY
         t += 1
         reward_seq.append(self.rewards)
         self.rewards = 0
@@ -197,7 +217,7 @@ class OurCustomEnv(gym.Env):
         self.speed = MAX_SPEED
         self.time = 0
         angle_away = np.arctan2(dist_x,dist_y)
-        state = np.array([angle_away] + constraint_array)
+        state = np.array([angle_away] + CONSTRAINT_ARRAY)
         return state
     def place_new_reward(self, first = False, d = 6.5, r = rewards):
         dist_x = self.user_x - self.reward_x
@@ -272,6 +292,7 @@ class CriticNetwork(nn.Module):
 
 class ActorNetwork(nn.Module):
     def __init__(self, alpha):
+        global N_OBS
         super(ActorNetwork, self).__init__()
         self.input_dims = N_OBS
         self.fc1_dims = network_size
@@ -297,9 +318,10 @@ class ActorNetwork(nn.Module):
 class Agent(object):
     def __init__(self, alpha, beta, input_dims=N_OBS, tau=0, env=None, gamma=0.99,
                  n_actions=N_ACTIONS, max_size=1000000,  batch_size=64):
+        global N_OBS
         self.gamma = gamma
         self.tau = tau
-        self.memory = ReplayBuffer(max_size)
+        self.memory = ReplayBuffer(max_size, input_shape=N_OBS)
         self.batch_size = batch_size
         self.actor = ActorNetwork(alpha)
         self.critic = CriticNetwork(beta)
@@ -456,48 +478,30 @@ def rl_test(training_runs= 1, train_no_synth = 0):
     print('Score History: ', score_history)
     print('Reward History: ',reward_seq[1:])
 
-    
-def load_rl_train(training_runs=5000, train_no_synth = 3000, net_size=256):
+def benchmark_constraint_langs(training_runs=5000, train_no_synth = 3000, net_size=256,desired_coverage = 0.925):
     global t
     global VERBOSE
-    global rewards
-    global reward_seq
     global no_synth
     global network_size
-    env = OurCustomEnv()
-    no_synth = train_no_synth
-    network_size = net_size
-    file = open("agent.pickle",'rb')
-    agent = pickle.load(file)
-    file.close()
-    score_history = []
-    max_score = -50000
-    for i in range(training_runs):
-        t=i
-        obs = env.reset()
-        done = False
-        score = 0
-        while not done:
-            act = agent.choose_action(obs)
-            new_state, reward, done, info = env.step(act)
-            agent.remember(obs, act, reward, new_state, int(done))
-            agent.learn()
-            score += reward
-            obs = new_state
-        if max_score < score:
-            max_score = score
-            if VERBOSE > 0:
-                print("New Max: " +str(max_score))
-        if VERBOSE > 1:
-            print(i,score)
-        score_history.append(score)
-        if len(score_history) > 51 and VERBOSE > 1 and i % 10 == 0:
-            print("Average score(last 50): " + str(sum(score_history[-50:])/ len(score_history[-50:])))
-    pickle.dump(agent, file = open("agent.pickle", "wb"))
-    obs = env.reset()
-    if VERBOSE > 0:    
-        print('Score History: ', score_history)
-        print('Reward History: ',reward_seq[1:])
+    global N_OBS
+    global N_ACTIONS
+    global CONSTRAINT_ARRAY
+    global IS_VIOLATED
+    global RANDOMIZE_CONSTRAINT
+    langs = []
+    coverage_histories = []
+    langs.append(ConstraintLanguage(constraint_array = [0, MAX_ANGLE], n_obs = 3, is_violated = is_violated_basic, randomize_constraint = randomize_constraint_basic))
+    langs.append(ConstraintLanguage(constraint_array = [0, 1, 1, 0, 3], n_obs = 6, is_violated = is_violated_box, randomize_constraint = randomize_constraint_box))
+    for lang in langs:
+        N_OBS = lang.n_obs
+        CONSTRAINT_ARRAY = lang.constraint_array
+        IS_VIOLATED = lang.is_violated
+        RANDOMIZE_CONSTRAINT = lang.randomize_constraint
+        coverage_history = rl_train(training_runs, train_no_synth, net_size, desired_coverage)
+        coverage_histories.append(coverage_history)
+    for c in coverage_histories:
+        print(c)
+
 
 def rl_train(training_runs=5000, train_no_synth = 3000, net_size=256,desired_coverage = 0.92):
     global t
@@ -528,6 +532,7 @@ def rl_train(training_runs=5000, train_no_synth = 3000, net_size=256,desired_cov
             print(i,score)
         if i % 25 == 0:
             coverage = get_coverage(agent)
+            coverage_history.append(coverage)
             if VERBOSE > 1:    
                     print('Coverage: ', coverage)
             if coverage >= desired_coverage:
@@ -535,6 +540,7 @@ def rl_train(training_runs=5000, train_no_synth = 3000, net_size=256,desired_cov
                 obs = env.reset()
                 if VERBOSE > 0:    
                     print('Coverage History: ', coverage_history)
+                return coverage_history
 
     pickle.dump(agent, file = open("agent.pickle", "wb"))
     obs = env.reset()
@@ -568,7 +574,7 @@ if __name__ == "__main__":
     group1 = parser.add_mutually_exclusive_group()
     group2.add_argument("-nt", help="Non-training Mode (load the model from agent.pickle and test it out)",action="store_true")
     group2.add_argument("-mi", help="Manual Input Mode (load the model from agent.pickle and test it out- you get to choose the limits)",action="store_true")
-    group2.add_argument("-tp", help="Train Pickled Model Mode (load the model from agent.pickle and retrain it)",action="store_true")
+    group2.add_argument("-e", help="Evaluate mode (benchmark a bunch of different constraints)",action="store_true")
     group1.add_argument("-v", help="Verbose Mode",action="store_true")
     group1.add_argument("-vv", help="Super Verbose Mode",action="store_true")
     group1.add_argument("-vvv", help="Super Duper Verbose Mode",action="store_true")
@@ -587,8 +593,8 @@ if __name__ == "__main__":
         rl_test(args.training_runs,args.training_runs_no_synth)
     elif args.mi:
         rl_manual_test(args.training_runs,args.training_runs_no_synth)
-    elif args.tp:
-        load_rl_train(args.training_runs, args.training_runs_no_synth, args.network_size)
+    elif args.e:
+        benchmark_constraint_langs(args.training_runs, args.training_runs_no_synth, args.network_size)
     else:
         rl_train(args.training_runs, args.training_runs_no_synth, args.network_size)
     
