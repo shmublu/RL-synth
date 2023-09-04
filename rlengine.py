@@ -25,14 +25,15 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 MAX_ANGLE = 6.2831
-MAX_SPEED = 5
+MAX_ACCEL = 0.25
+MAX_SPEED = 4
 EPOCH_LEN = 200
 
 STEER = 0
-SPEED = 1
+ACCEL = 1
 BRAKE = 2
 TIME_CONSTANT = 1
-MAX_SPEED=5
+MAX_ACCEL=5
 rewards = [0]
 reward_seq = []
 
@@ -65,8 +66,6 @@ class ConstraintLanguage():
         self.is_violated = is_violated
         self.randomize_constraint = randomize_constraint
 
-
-    
 def square_rooted(x):
    return round(math.sqrt(sum([a*a for a in x])),3)
   
@@ -82,15 +81,15 @@ def randomize_constraint_basic(constraint):
     constraint[1] = random.uniform(constraint[0], MAX_ANGLE)
 def is_violated_box(constraint, action):
     global is_manual
-    if action[SPEED] < 0 or action[SPEED] > MAX_SPEED:
-        return True, action[SPEED]
+    if action[ACCEL] < 0 or action[ACCEL] > MAX_ACCEL:
+        return True, action[ACCEL]
     if action[STEER] < 0 or action[STEER] > MAX_ANGLE:
         return True, action[STEER]
     constrained_variable = -1
     if constraint[0] == 1:
         constrained_variable = STEER
     else:
-        constrained_variable = SPEED
+        constrained_variable = ACCEL
     if constraint[2] == 1:
         if action[constrained_variable] < constraint[4]:
             return True, constraint[4] - action[constrained_variable]
@@ -104,7 +103,7 @@ def randomize_constraint_box(constraint):
     constraint[2] = random.randint(0,1)
     constraint[3] = (constraint[2] + 1) % 2
     constraint[4] = random.uniform(0.001, MAX_ANGLE)
-    if constraint[1] == 1 and constraint[4] > MAX_SPEED:
+    if constraint[1] == 1 and constraint[4] > MAX_ACCEL:
         constraint[4] = random.uniform(4.9, 5)
 
 def pick_constraint(constraint):
@@ -131,7 +130,7 @@ class OurCustomEnv(gym.Env):
         self.reward_y = 0
         self.reward_x = 0
         self.place_new_reward(True,5.5)
-        self.speed = MAX_SPEED
+        self.speed = MAX_ACCEL
         self.time = 0
         self.mistakes =0
         
@@ -156,7 +155,9 @@ class OurCustomEnv(gym.Env):
                     print('Model output has been constrained down!', action[STEER], self.max_angle)
                 action[STEER] = self.max_angle
         steer = action[STEER] % MAX_ANGLE
-        self.speed =  max(action[SPEED], 0) if action[SPEED] < MAX_SPEED else 0
+        acc =  max(action[ACCEL], -MAX_ACCEL) if action[ACCEL] < MAX_ACCEL else MAX_ACCEL
+        self.speed = min(max(0, self.speed + acc), MAX_SPEED)
+
         steer_x = math.cos(steer)
         steer_y = math.sin(steer)
         steer_dir = np.array([steer_x,steer_y])
@@ -165,7 +166,6 @@ class OurCustomEnv(gym.Env):
         old_dist = (dist_x ** 2 + dist_y **2 )
         self.user_x += self.speed * steer_dir[0]
         self.user_y += self.speed * steer_dir[1]
-        
         dist_x = self.reward_x -self.user_x
         dist_y = self.reward_y -self.user_y
         dist = (dist_x ** 2 + dist_y **2 ) #we aren't going to square root for speed sake
@@ -187,14 +187,14 @@ class OurCustomEnv(gym.Env):
         angle_away = np.arctan2(dist_x,dist_y)
         if self.time % 97 == 0 and VERBOSE > 2:
             print(CONSTRAINT_ARRAY)
-            print("Speed: ", action[SPEED], "Steer: ", action[STEER], "Dist from Reward: ", dist_x, dist_y, "Constraint: ",CONSTRAINT_ARRAY)
+            print("Speed: ", action[ACCEL], "Steer: ", action[STEER], "Dist from Reward: ", dist_x, dist_y, "Constraint: ",CONSTRAINT_ARRAY)
         elif VERBOSE > 3:
-            print("Speed: ", action[SPEED],  "Steer: ", action[STEER], "Dist from Reward: ", dist_x, dist_y,  "Constraint: ",CONSTRAINT_ARRAY)
+            print("Speed: ", action[ACCEL],  "Steer: ", action[STEER], "Dist from Reward: ", dist_x, dist_y,  "Constraint: ",CONSTRAINT_ARRAY)
         if not is_manual:
             RANDOMIZE_CONSTRAINT(CONSTRAINT_ARRAY)
         else:
             pick_constraint(CONSTRAINT_ARRAY)
-        state = np.array([angle_away] + CONSTRAINT_ARRAY)
+        state = np.array([angle_away, self.speed] + CONSTRAINT_ARRAY)
         return state, reward, done, info 
     def reset(self):
         global reward_seq
@@ -210,14 +210,12 @@ class OurCustomEnv(gym.Env):
         self.place_new_reward(True, 5.5)
         dist_x = self.user_x - self.reward_x
         dist_y = self.user_y - self.reward_y
-        
         self.min_angle = 0
         self.max_angle = MAX_ANGLE
-        
-        self.speed = MAX_SPEED
+        self.speed = MAX_ACCEL
         self.time = 0
         angle_away = np.arctan2(dist_x,dist_y)
-        state = np.array([angle_away] + CONSTRAINT_ARRAY)
+        state = np.array([angle_away, self.speed] + CONSTRAINT_ARRAY)
         return state
     def place_new_reward(self, first = False, d = 6.5, r = rewards):
         dist_x = self.user_x - self.reward_x
@@ -235,7 +233,6 @@ class OurCustomEnv(gym.Env):
             dist = (dist_x ** 2 + dist_y **2 )
         
 class ReplayBuffer():
-
     def __init__(self, max_size, input_shape=N_OBS, n_actions=N_ACTIONS):
         self.mem_size = max_size
         self.mem_cntr = 0
@@ -490,12 +487,13 @@ def benchmark_constraint_langs(training_runs=5000, train_no_synth = 3000, net_si
     global RANDOMIZE_CONSTRAINT
     langs = []
     coverage_histories = []
-    langs.append(ConstraintLanguage(constraint_array = [0, MAX_ANGLE], n_obs = 3, is_violated = is_violated_basic, randomize_constraint = randomize_constraint_basic))
-    langs.append(ConstraintLanguage(constraint_array = [0, 1, 1, 0, 3], n_obs = 6, is_violated = is_violated_box, randomize_constraint = randomize_constraint_box))
+    langs.append(ConstraintLanguage(constraint_array = [0, MAX_ANGLE], n_obs = 4, is_violated = is_violated_basic, randomize_constraint = randomize_constraint_basic))
+    langs.append(ConstraintLanguage(constraint_array = [0, 1, 1, 0, 3], n_obs = 7, is_violated = is_violated_box, randomize_constraint = randomize_constraint_box))
     for lang in langs:
         N_OBS = lang.n_obs
         CONSTRAINT_ARRAY = lang.constraint_array
         IS_VIOLATED = lang.is_violated
+        print(IS_VIOLATED)
         RANDOMIZE_CONSTRAINT = lang.randomize_constraint
         coverage_history = rl_train(training_runs, train_no_synth, net_size, desired_coverage)
         coverage_histories.append(coverage_history)
@@ -503,7 +501,7 @@ def benchmark_constraint_langs(training_runs=5000, train_no_synth = 3000, net_si
         print(c)
 
 
-def rl_train(training_runs=5000, train_no_synth = 3000, net_size=256,desired_coverage = 0.92):
+def rl_train(training_runs=5000, train_no_synth = 3000, net_size=256,desired_coverage = 0.965):
     global t
     global VERBOSE
     global rewards
